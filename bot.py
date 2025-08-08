@@ -3,9 +3,8 @@ import logging
 import sqlite3
 import os
 import re
-from datetime import datetime
+from datetime import datetime, date
 from dotenv import load_dotenv
-
 import openpyxl  # pip install openpyxl
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -73,22 +72,23 @@ def create_session(tg_id, student_id):
     conn.close()
 
 # ================= Schedule parsing və saxlanma (diagnostika daxil) =================
-SCHEDULE = []  # hər element: {"group","day","time","subject","day_norm"}
+SCHEDULE = []  # hər element: {"week_type", "group", "day_norm", "time", "subject", "teacher", "room"}
 
 DAY_MAP = {
-    "monday": "Monday", "mon": "Monday",
-    "tuesday": "Tuesday", "tue": "Tuesday",
-    "wednesday": "Wednesday", "wed": "Wednesday",
-    "thursday": "Thursday", "thu": "Thursday",
-    "friday": "Friday", "fri": "Friday",
-    "saturday": "Saturday", "sat": "Saturday",
-    "sunday": "Sunday", "sun": "Sunday",
+    "monday": "1", "mon": "1",
+    "tuesday": "2", "tue": "2",
+    "wednesday": "3", "wed": "3",
+    "thursday": "4", "thu": "4",
+    "friday": "5", "fri": "5",
+    "saturday": "6", "sat": "6",
+    "sunday": "7", "sun": "7",
     # Azərbaycan dilləri və translit variantları
-    "bazar ertəsi": "Monday", "bazarertesi": "Monday", "bazarertesi": "Monday",
-    "çərşənbə axşamı": "Tuesday", "çərsənbə axşamı": "Tuesday",
-    "çərşənbə": "Wednesday", "cümə axşamı": "Thursday", "cümə": "Friday",
-    "şənbə": "Saturday", "sebne": "Saturday", "shenbe": "Saturday",
-    "bazar": "Sunday", "bazar günü": "Sunday", "cuma": "Friday", "cume": "Friday"
+    "bazar ertəsi": "1", "bazarertesi": "1", "bazarertesi": "1",
+    "çərşənbə axşamı": "2", "çərsənbə axşamı": "2",
+    "çərşənbə": "3", "cümə axşamı": "4", "cümə": "5",
+    "şənbə": "6", "sebne": "6", "shenbe": "6",
+    "bazar": "7", "bazar günü": "7", "cuma": "5", "cume": "5",
+    "1": "1", "2": "2", "3": "3", "4": "4", "5": "5", "6": "6", "7": "7"
 }
 WEEKDAYS_EN = set(["monday","tuesday","wednesday","thursday","friday","saturday","sunday"])
 
@@ -109,6 +109,34 @@ def normalize_day_to_english(raw):
             return v
     return s.capitalize()
 
+def is_alt_week():
+    """Həftənin alt və ya üst həftə olduğunu müəyyən edir."""
+    # datetime.isocalendar() həftə nömrəsini qaytarır.
+    # ISO 8601-ə görə, həftələr 1-dən başlayır. Tək həftə (1, 3, 5) alt, cüt həftə (2, 4, 6) üst həftədir.
+    # Ayın birinci həftəsi alt həftə olaraq qəbul edilir.
+    
+    today = datetime.now()
+    first_day_of_month = date(today.year, today.month, 1)
+    
+    # Ayın ilk həftəsinin nömrəsini tapırıq
+    first_week_num = first_day_of_month.isocalendar()[1]
+    
+    # Cari həftənin nömrəsini tapırıq
+    current_week_num = today.isocalendar()[1]
+    
+    # Fərq təkdirsə, bu ayın ilk həftəsi ilə eyni tipdir.
+    week_diff = current_week_num - first_week_num
+    
+    # Ayın ilk həftəsi "alt" olaraq qəbul edildiyi üçün, 
+    # həftənin növü fərqin cüt olub-olmamasından asılıdır.
+    # fərq cütdürsə (0, 2, 4...), həftə növü ilkin həftə ilə eynidir (alt).
+    # fərq təkdirsə (1, 3, 5...), həftə növü ilkin həftənin əksidir (üst).
+    
+    # Yəni, fərq cüt olarsa (fərq % 2 == 0), "alt" həftədir.
+    # fərq tək olarsa (fərq % 2 != 0), "üst" həftədir.
+
+    return week_diff % 2 == 0
+
 def load_schedule_from_xlsx(path=SCHEDULE_XLSX):
     """
     Güclü diagnostika ilə schedule yükləyir.
@@ -122,10 +150,7 @@ def load_schedule_from_xlsx(path=SCHEDULE_XLSX):
         "num_rows": 0,
         "headers": [],
         "ncols": 0,
-        "weekday_counts": [],
-        "time_counts": [],
-        "text_counts": [],
-        "detected": {"group_col": None, "day_col": None, "time_col": None, "subject_col": None},
+        "detected": {"week_col": None, "group_col": None, "day_col": None, "subject_col": None},
         "parsed_rows": []
     }
 
@@ -154,89 +179,93 @@ def load_schedule_from_xlsx(path=SCHEDULE_XLSX):
     ncols = len(headers)
     diagnostics["ncols"] = ncols
 
-    weekday_counts = [0]*ncols
-    time_counts = [0]*ncols
-    text_counts = [0]*ncols
-
-    for r in rows[1:]:
-        for i in range(ncols):
-            cell = r[i] if i < len(r) else None
-            if cell is None:
-                continue
-            s = str(cell).strip()
-            sl = s.lower().replace("\u00A0"," ").strip()
-            if sl in WEEKDAYS_EN or sl in DAY_MAP:
-                weekday_counts[i] += 1
-            if re.match(r'^\d{1,2}:\d{2}$', sl):
-                time_counts[i] += 1
-            if sl:
-                text_counts[i] += 1
-
-    diagnostics["weekday_counts"] = weekday_counts
-    diagnostics["time_counts"] = time_counts
-    diagnostics["text_counts"] = text_counts
-
-    day_col = weekday_counts.index(max(weekday_counts)) if max(weekday_counts) > 0 else None
-    time_col = time_counts.index(max(time_counts)) if max(time_counts) > 0 else None
-
-    group_col = None
-    subject_col = None
-    for i,h in enumerate(headers):
+    week_col, group_col, day_col, subject_col = None, None, None, None
+    for i, h in enumerate(headers):
         hl = h.lower()
-        if 'group' in hl and group_col is None:
+        if 'week' in hl:
+            week_col = i
+        elif 'group' in hl:
             group_col = i
-        if any(k in hl for k in ("subject","lesson","fənn","fenn")) and subject_col is None:
+        elif 'day' in hl:
+            day_col = i
+        elif 'subject' in hl:
             subject_col = i
-
-    if group_col is None:
-        best = None; best_cnt = -1
-        for i in range(ncols):
-            if i == day_col or i == time_col:
-                continue
-            if text_counts[i] > best_cnt:
-                best_cnt = text_counts[i]; best = i
-        group_col = best if best is not None else 0
-
-    if subject_col is None:
-        candidate = None; max_texts=-1
-        for i in range(ncols):
-            if i in (group_col, day_col, time_col):
-                continue
-            if text_counts[i] > max_texts:
-                max_texts = text_counts[i]; candidate = i
-        subject_col = candidate if candidate is not None else max(0, ncols-1)
-
+    
+    diagnostics["detected"]["week_col"] = week_col
     diagnostics["detected"]["group_col"] = group_col
     diagnostics["detected"]["day_col"] = day_col
-    diagnostics["detected"]["time_col"] = time_col
     diagnostics["detected"]["subject_col"] = subject_col
 
     for idx, r in enumerate(rows[1:], start=2):
         def cell_at(i):
             return r[i] if i < len(r) and r[i] is not None else ""
+
+        week_type = str(cell_at(week_col)).strip().lower() if week_col is not None else ""
         group = str(cell_at(group_col)).strip() if group_col is not None else ""
         day_raw = str(cell_at(day_col)).strip() if day_col is not None else ""
-        time = str(cell_at(time_col)).strip() if time_col is not None else ""
-        subject = str(cell_at(subject_col)).strip() if subject_col is not None else ""
-
-        if not day_raw and len(r) > 1:
-            c1 = r[1]
-            if c1 and str(c1).strip().lower() in WEEKDAYS_EN.union(set(DAY_MAP.keys())):
-                day_raw = str(c1).strip()
-
-        if not group or not subject:
+        subject_raw = str(cell_at(subject_col)).strip() if subject_col is not None else ""
+        
+        if not all([week_type, group, day_raw, subject_raw]):
             diagnostics["parsed_rows"].append({
                 "row_index": idx,
                 "raw": [str(x) if x is not None else "" for x in r],
                 "skipped": True,
-                "reason": "missing group or subject",
-                "group": group,
-                "subject": subject
+                "reason": "missing critical data",
+                "data": {"week": week_type, "group": group, "day": day_raw, "subject": subject_raw}
             })
             continue
 
         day_norm = normalize_day_to_english(day_raw)
-        entry = {"group": group.strip(), "day": day_raw.strip(), "time": time.strip(), "subject": subject.strip(), "day_norm": day_norm}
+        
+        # Subject sütunundakı məlumatları ayırmaq
+        # Örnək: "1)IT əsasları (seminar) - Kazımov Ramin (08:00, otaq 02KM)"
+        match = re.match(r'^(?:\d+\))?\s*(.*?)(?:\s+-\s+(.*?))?(?:\s+\((.*?)\))?$', subject_raw)
+        
+        subject = ""
+        teacher = ""
+        time_str = ""
+        room = ""
+
+        # Mətndə vaxtı və otağı tapmaq üçün regex
+        time_room_match = re.search(r'\((\d{1,2}:\d{2})(?:,\s*(otaq\s+.*?))?\)', subject_raw)
+        if time_room_match:
+            time_str = time_room_match.group(1).strip()
+            room_match_text = time_room_match.group(2)
+            if room_match_text:
+                room = room_match_text.strip()
+        
+        # Mətndə fənnin adını və müəllimi tapmaq üçün
+        subject_teacher_match = re.match(r'^(?:\d+\))?\s*(.*?)(?:\s+\(.*?\))?\s+-\s+(.*?)\s+', subject_raw)
+        if subject_teacher_match:
+            subject = subject_teacher_match.group(1).strip()
+            teacher = subject_teacher_match.group(2).strip()
+        else: # əgər format fərqli olsa
+            subject_no_extra = re.sub(r'\(.*?\)\s*-\s*.*', '', subject_raw).strip()
+            subject = re.sub(r'^\d+\)\s*', '', subject_no_extra).strip()
+            teacher_match = re.search(r'-\s*(.*?)\s*\(', subject_raw)
+            if teacher_match:
+                teacher = teacher_match.group(1).strip()
+        
+        if not time_str and not subject: # Fənn adı yoxdursa atla
+            diagnostics["parsed_rows"].append({
+                "row_index": idx,
+                "raw": [str(x) if x is not None else "" for x in r],
+                "skipped": True,
+                "reason": "missing subject details",
+                "data": {"subject_raw": subject_raw}
+            })
+            continue
+
+        entry = {
+            "week_type": week_type,
+            "group": group.strip(),
+            "day": day_raw.strip(),
+            "day_norm": day_norm,
+            "time": time_str,
+            "subject": subject,
+            "teacher": teacher,
+            "room": room
+        }
         SCHEDULE.append(entry)
         diagnostics["parsed_rows"].append({
             "row_index": idx,
@@ -252,14 +281,21 @@ def get_lessons_for_group_on_day(group_name, day_name):
     result = []
     if not group_name or not day_name:
         return result
+    
+    current_week_is_alt = is_alt_week()
+    expected_week_type = "alt" if current_week_is_alt else "ust"
+
     for l in SCHEDULE:
         if l["group"].strip().lower() != group_name.strip().lower():
             continue
-        dn = l.get("day_norm","") or l.get("day","")
-        if not dn:
+        
+        if l["week_type"].lower() != expected_week_type:
             continue
+            
+        dn = l.get("day_norm","")
         if dn.strip().lower() == day_name.strip().lower():
             result.append(l)
+    
     def time_key(x):
         t = x.get("time","")
         m = re.match(r'(\d{1,2}):(\d{2})', t)
@@ -269,19 +305,27 @@ def get_lessons_for_group_on_day(group_name, day_name):
     result.sort(key=time_key)
     return result
 
-def get_lessons_filtered(group=None, day=None, subject=None):
+def get_lessons_filtered(group=None, day=None, subject=None, week_type=None):
     res = []
+    
+    if week_type is None:
+        current_week_is_alt = is_alt_week()
+        week_type = "alt" if current_week_is_alt else "ust"
+
     for l in SCHEDULE:
+        if l['week_type'].lower() != week_type.lower():
+            continue
         if group and l['group'].strip().lower() != group.strip().lower():
             continue
         if day:
             rd = normalize_day_to_english(day)
-            dn = l.get("day_norm","") or l.get("day","")
-            if dn.strip().lower() != rd.strip().lower() and dn.strip().lower() != day.strip().lower():
+            dn = l.get("day_norm","")
+            if dn.strip().lower() != rd.strip().lower():
                 continue
         if subject and subject.strip().lower() not in l.get('subject','').strip().lower():
             continue
         res.append(l)
+    
     res.sort(key=lambda x: (re.match(r'(\d{1,2}):(\d{2})', x.get('time','')) and
                             (int(re.match(r'(\d{1,2}):(\d{2})', x.get('time','')).group(1))*60 +
                              int(re.match(r'(\d{1,2}):(\d{2})', x.get('time','')).group(2)))) or 0)
@@ -385,17 +429,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "today":
-        today_eng = datetime.now().strftime("%A")
-        lessons = get_lessons_for_group_on_day(student["group_name"], today_eng)
+        today_weekday = datetime.now().weekday() + 1 # Monday is 1, Sunday is 7
+        today_is_alt = is_alt_week()
+        week_type_str = "alt" if today_is_alt else "üst"
+        lessons = get_lessons_for_group_on_day(student["group_name"], str(today_weekday))
+        
         if not lessons:
-            await query.message.reply_text("Bu gün üçün dərs yoxdur.")
+            await query.message.reply_text(f"{week_type_str.capitalize()} həftə üçün bu gün dərs yoxdur.")
         else:
-            text_lines = [f"Bugün — {student['group_name']}:"]
+            text_lines = [f"Bugün - {week_type_str.capitalize()} həftə, {student['group_name']}:"]
             for ls in lessons:
-                t = ls.get("time","—")
-                subj = ls.get("subject","—")
-                text_lines.append(f"{t} — {subj}")
+                time_str = ls.get("time", "—")
+                subject_str = ls.get("subject", "—")
+                teacher_str = f"({ls.get('teacher', '—')})" if ls.get('teacher') else ""
+                room_str = f"[otaq {ls.get('room', '—')}]" if ls.get('room') else ""
+                text_lines.append(f"{time_str} - {subject_str} {teacher_str} {room_str}".strip())
             await query.message.reply_text("\n".join(text_lines))
+
     elif data == "grades":
         await query.message.reply_text("Qiymətlər funksiyası hazırlanır.")
     elif data == "attendance":
@@ -461,20 +511,20 @@ async def addstudent_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def schedule_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
-        await update.message.reply_text("İstifadə: /schedule <group> [day] [subject]\nMəsələn: /schedule IT-101 Monday Programming")
+        await update.message.reply_text("İstifadə: /schedule <group> [day] [week_type]\nMəsələn: /schedule IT-101 1 alt")
         return
     group = args[0]
     day = args[1] if len(args) >= 2 else None
-    subject = " ".join(args[2:]) if len(args) >= 3 else None
+    week_type = args[2] if len(args) >= 3 and args[2].lower() in ["alt", "ust"] else None
 
-    lessons = get_lessons_filtered(group=group, day=day, subject=subject)
+    lessons = get_lessons_filtered(group=group, day=day, week_type=week_type)
     if not lessons:
         await update.message.reply_text("Uyğun dərs tapılmadı.")
         return
 
-    lines = [f"Cədvəl — {group} {('' if not day else day)} {('' if not subject else subject)}:"]
+    lines = [f"Cədvəl — {group} {('' if not day else day)} {('' if not week_type else week_type)}:"]
     for ls in lessons:
-        lines.append(f"{ls.get('day_norm') or ls.get('day','—')} {ls.get('time','—')} — {ls.get('subject','—')}")
+        lines.append(f"{ls.get('day_norm') or ls.get('day','—')} ({ls.get('week_type','—')}) {ls.get('time','—')} — {ls.get('subject','—')}")
     await update.message.reply_text("\n".join(lines))
 
 async def reload_schedule_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -498,19 +548,18 @@ async def showschedule_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts.append(f"Rows (including header): {diag['num_rows']}")
     parts.append(f"Ncols: {diag['ncols']}")
     parts.append("Headers: " + ", ".join([h or "<empty>" for h in diag["headers"]]))
-    parts.append("Detected cols: group=%s, day=%s, time=%s, subject=%s" % (
-        diag["detected"]["group_col"], diag["detected"]["day_col"],
-        diag["detected"]["time_col"], diag["detected"]["subject_col"]
+    parts.append("Detected cols: week=%s, group=%s, day=%s, subject=%s" % (
+        diag["detected"]["week_col"], diag["detected"]["group_col"],
+        diag["detected"]["day_col"], diag["detected"]["subject_col"]
     ))
-    parts.append("Weekday counts per column: " + ", ".join(map(str, diag["weekday_counts"])))
-    parts.append("Time counts per column: " + ", ".join(map(str, diag["time_counts"])))
+    
     parts.append("Parsed (first 20) rows summary:")
     for pr in diag["parsed_rows"][:20]:
         if pr.get("skipped"):
             parts.append(f"  row {pr['row_index']}: SKIPPED reason={pr['reason']} raw={pr['raw']}")
         else:
             p = pr["parsed"]
-            parts.append(f"  row {pr['row_index']}: group={p['group']} day={p['day_norm'] or p['day']} time={p['time']} subject={p['subject']}")
+            parts.append(f"  row {pr['row_index']}: week={p['week_type']} group={p['group']} day={p['day_norm']} time={p['time']} subject={p['subject']}")
     grp_counts = {}
     for e in SCHEDULE:
         g = e['group'].strip()
@@ -552,7 +601,6 @@ def main():
             ASK_PERSONAL_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, personal_number_received)],
             SET_NEW_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_new_code)],
             ASK_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, code_received)],
-            CHANGE_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, change_code_received)],
         },
         fallbacks=[CommandHandler("cancel", cancel), CommandHandler("reset", reset)],
         per_user=True,
