@@ -3,7 +3,7 @@ import logging
 import sqlite3
 import os
 import re
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from dotenv import load_dotenv
 import openpyxl  # pip install openpyxl
 
@@ -339,6 +339,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def personal_number_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     personal = update.message.text.strip()
+
+    # Telefon nömrəsini avtomatik formatla
+    digits = re.sub(r'\D', '', personal)
+    if digits.startswith("0") and len(digits) == 10:
+        personal = "+994" + digits[1:]
+    elif digits.startswith("5") and len(digits) == 9:
+        personal = "+994" + digits
+    elif digits.startswith("9940") and len(digits) == 12:
+        personal = "+994" + digits[3:]
+    elif digits.startswith("994") and len(digits) == 12:
+        personal = "+" + digits
+    elif not digits.startswith("994"):
+        personal = "+994" + digits
+
     student = get_student_by_personal(personal)
     if not student:
         await update.message.reply_text("Bu nömrə tapılmadı. Yenidən şəxsi nömrənizi daxil edin:")
@@ -410,7 +424,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     kb = [
-        [InlineKeyboardButton("📅 Bugünkü dərslər", callback_data="today")],
+        [InlineKeyboardButton("📅 Dərs cədvəlinə bax", callback_data="schedule_menu")],
         [InlineKeyboardButton("📊 Qiymətlər", callback_data="grades")],
         [InlineKeyboardButton("🚫 Qayıblar", callback_data="attendance")],
         [InlineKeyboardButton("🔒 Şifrəni dəyiş", callback_data="change_code")],
@@ -428,7 +442,49 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("Əvvəl qeydiyyatdan keçin. /start yazın.")
         return
 
-    if data == "today":
+    if data == "schedule_menu":
+        kb = [
+            [InlineKeyboardButton("📅 Bugün", callback_data="sched_today")],
+            [InlineKeyboardButton("📅 Sabah", callback_data="sched_tomorrow")],
+            [InlineKeyboardButton("📅 Bu həftə", callback_data="sched_week")]
+        ]
+        await query.message.reply_text("Zəhmət olmasa tarix seçin:", reply_markup=InlineKeyboardMarkup(kb))
+
+    elif data in ["sched_today", "sched_tomorrow", "sched_week"]:
+        today = datetime.now()
+        if data == "sched_tomorrow":
+            target_date = today + timedelta(days=1)
+        elif data == "sched_today":
+            target_date = today
+        else:
+            target_date = None
+
+        if target_date and target_date.weekday() in [5, 6]:
+            week_type_str = "alt" if not is_alt_week() else "üst"
+        else:
+            week_type_str = "alt" if is_alt_week() else "üst"
+
+        if data == "sched_week":
+            lessons = get_lessons_filtered(group=student["group_name"], week_type=week_type_str)
+        else:
+            lessons = get_lessons_filtered(group=student["group_name"], day=str(target_date.weekday() + 1), week_type=week_type_str)
+
+        if not lessons:
+            await query.message.reply_text(f"{week_type_str.capitalize()} həftə üçün dərs yoxdur.")
+        else:
+            if data == "sched_week":
+                text_lines = [f"{week_type_str.capitalize()} həftə, {student['group_name']}:"]
+            else:
+                text_lines = [f"{target_date.strftime('%d.%m.%Y')} — {week_type_str.capitalize()} həftə, {student['group_name']}:"]
+            for ls in lessons:
+                time_str = ls.get("time", "—")
+                subject_str = ls.get("subject", "—")
+                teacher_str = f"({ls.get('teacher', '—')})" if ls.get('teacher') else ""
+                room_str = f"[otaq {ls.get('room', '—')}]" if ls.get('room') else ""
+                text_lines.append(f"{time_str} - {subject_str} {teacher_str} {room_str}".strip())
+            await query.message.reply_text("\n".join(text_lines))
+
+    elif data == "today":
         today_weekday = datetime.now().weekday() + 1 # Monday is 1, Sunday is 7
         today_is_alt = is_alt_week()
         week_type_str = "alt" if today_is_alt else "üst"
