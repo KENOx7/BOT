@@ -83,21 +83,19 @@ DAY_MAP = {
     "saturday": "6", "sat": "6",
     "sunday": "7", "sun": "7",
     # Azərbaycan dilləri və translit variantları
-    "bazar ertəsi": "1", "bazarertesi": "1", "bazarertesi": "1",
+    "bazar ertəsi": "1", "bazarertesi": "1", "bazar ertesi": "1",
     "çərşənbə axşamı": "2", "çərsənbə axşamı": "2",
     "çərşənbə": "3", "cümə axşamı": "4", "cümə": "5",
     "şənbə": "6", "sebne": "6", "shenbe": "6",
     "bazar": "7", "bazar günü": "7", "cuma": "5", "cume": "5",
     "1": "1", "2": "2", "3": "3", "4": "4", "5": "5", "6": "6", "7": "7"
 }
-WEEKDAYS_EN = set(["monday","tuesday","wednesday","thursday","friday","saturday","sunday"])
 
 def normalize_day_to_english(raw):
     if not raw:
         return ""
     s = str(raw).strip().lower()
     s = s.replace("\u00A0"," ").strip()
-    # remove weird punctuation except az chars and digits, spaces, hyphen
     s = re.sub(r'[^0-9a-zA-Zçəğıöşüıə\s\-]', '', s)
     s = re.sub(r'\s+', ' ', s).strip()
     if not s:
@@ -112,30 +110,13 @@ def normalize_day_to_english(raw):
 def is_alt_week():
     """Həftənin alt və ya üst həftə olduğunu müəyyən edir."""
     # datetime.isocalendar() həftə nömrəsini qaytarır.
-    # ISO 8601-ə görə, həftələr 1-dən başlayır. Tək həftə (1, 3, 5) alt, cüt həftə (2, 4, 6) üst həftədir.
-    # Ayın birinci həftəsi alt həftə olaraq qəbul edilir.
-    
+    # Bu funksiya ISO 8601-ə əsaslanır. Həftələr 1-dən başlayır.
+    # Tək həftə (1, 3, 5) alt, cüt həftə (2, 4, 6) üst həftədir.
+    # ISO-ya görə, bir ilin ilk həftəsi, ən az 4 günü o ildə olan həftədir.
+    # Sadəlik üçün tək həftələri 'alt', cüt həftələri 'üst' kimi götürürük.
     today = datetime.now()
-    first_day_of_month = date(today.year, today.month, 1)
-    
-    # Ayın ilk həftəsinin nömrəsini tapırıq
-    first_week_num = first_day_of_month.isocalendar()[1]
-    
-    # Cari həftənin nömrəsini tapırıq
-    current_week_num = today.isocalendar()[1]
-    
-    # Fərq təkdirsə, bu ayın ilk həftəsi ilə eyni tipdir.
-    week_diff = current_week_num - first_week_num
-    
-    # Ayın ilk həftəsi "alt" olaraq qəbul edildiyi üçün, 
-    # həftənin növü fərqin cüt olub-olmamasından asılıdır.
-    # fərq cütdürsə (0, 2, 4...), həftə növü ilkin həftə ilə eynidir (alt).
-    # fərq təkdirsə (1, 3, 5...), həftə növü ilkin həftənin əksidir (üst).
-    
-    # Yəni, fərq cüt olarsa (fərq % 2 == 0), "alt" həftədir.
-    # fərq tək olarsa (fərq % 2 != 0), "üst" həftədir.
-
-    return week_diff % 2 == 0
+    week_num = today.isocalendar()[1]
+    return week_num % 2 != 0
 
 def load_schedule_from_xlsx(path=SCHEDULE_XLSX):
     """
@@ -218,7 +199,6 @@ def load_schedule_from_xlsx(path=SCHEDULE_XLSX):
         day_norm = normalize_day_to_english(day_raw)
         
         # Subject sütunundakı məlumatları ayırmaq
-        # Örnək: "1)IT əsasları (seminar) - Kazımov Ramin (08:00, otaq 02KM)"
         match = re.match(r'^(?:\d+\))?\s*(.*?)(?:\s+-\s+(.*?))?(?:\s+\((.*?)\))?$', subject_raw)
         
         subject = ""
@@ -277,34 +257,6 @@ def load_schedule_from_xlsx(path=SCHEDULE_XLSX):
     logger.info("Schedule yükləndi: %d sətir.", len(SCHEDULE))
     return True, diagnostics
 
-def get_lessons_for_group_on_day(group_name, day_name):
-    result = []
-    if not group_name or not day_name:
-        return result
-    
-    current_week_is_alt = is_alt_week()
-    expected_week_type = "alt" if current_week_is_alt else "ust"
-
-    for l in SCHEDULE:
-        if l["group"].strip().lower() != group_name.strip().lower():
-            continue
-        
-        if l["week_type"].lower() != expected_week_type:
-            continue
-            
-        dn = l.get("day_norm","")
-        if dn.strip().lower() == day_name.strip().lower():
-            result.append(l)
-    
-    def time_key(x):
-        t = x.get("time","")
-        m = re.match(r'(\d{1,2}):(\d{2})', t)
-        if m:
-            return int(m.group(1))*60 + int(m.group(2))
-        return 0
-    result.sort(key=time_key)
-    return result
-
 def get_lessons_filtered(group=None, day=None, subject=None, week_type=None):
     res = []
     
@@ -340,7 +292,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def personal_number_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     personal = update.message.text.strip()
 
-    # Telefon nömrəsini avtomatik formatla
     digits = re.sub(r'\D', '', personal)
     if digits.startswith("0") and len(digits) == 10:
         personal = "+994" + digits[1:]
@@ -455,8 +406,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if data == "sched_today":
             target_date = today
-            lessons = get_lessons_filtered(group=student["group_name"], day=str(target_date.weekday() + 1))
-            week_type_str = "alt" if is_alt_week() else "üst"
+            week_type_str = "alt" if is_alt_week() else "ust"
+            lessons = get_lessons_filtered(group=student["group_name"], day=str(target_date.weekday() + 1), week_type=week_type_str)
+            
             if not lessons:
                 message = f"{target_date.strftime('%d.%m.%Y')} — {week_type_str.capitalize()} həftə üçün dərs yoxdur."
             else:
@@ -472,12 +424,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif data == "sched_tomorrow":
             target_date = today + timedelta(days=1)
-            is_tomorrow_weekend = target_date.weekday() >= 5
+            # Dünənki həftənin növü isə bugünkü həftənin növünün əksidir.
+            # Yoxsa isə... bu biraz qarışıq ola bilər. sadəcə növbəti həftə növünü hesablayırıq
+            is_current_week_alt = is_alt_week()
             
-            if is_tomorrow_weekend:
-                week_type_str = "alt" if not is_alt_week() else "üst"
-            else:
-                week_type_str = "alt" if is_alt_week() else "üst"
+            if today.weekday() == 6: # bu gün bazar, sabah bazar ertəsi, yeni həftə başlayır
+                 next_week_type_is_alt = not is_current_week_alt
+            else: # bu gün bazar deyil, sabah eyni həftədədir
+                next_week_type_is_alt = is_current_week_alt
+                
+            week_type_str = "alt" if next_week_type_is_alt else "ust"
             
             lessons = get_lessons_filtered(group=student["group_name"], day=str(target_date.weekday() + 1), week_type=week_type_str)
 
@@ -497,37 +453,35 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "sched_week":
             current_day_of_week = today.weekday()
             
-            # If today is Saturday (5) or Sunday (6), show next week's schedule
+            is_current_week_alt = is_alt_week()
+            
+            # Əgər bu gün Şənbə (5) və ya Bazar (6) isə, növbəti həftənin cədvəlini göstər
             if current_day_of_week >= 5:
-                # The next week starts with the opposite week type
-                week_type_str = "alt" if not is_alt_week() else "ust"
-                week_start_date = today + timedelta(days=(7 - current_day_of_week))
+                # Növbəti həftənin növü indiki həftənin əksi olacaq
+                week_type_to_show = "alt" if not is_current_week_alt else "ust"
+                text_lines = [f"Növbəti həftə (şənbə və ya bazar olduğu üçün) — {week_type_to_show.capitalize()} həftə, {student['group_name']}:"]
                 
-                text_lines = [f"Növbəti həftə ({week_start_date.strftime('%d.%m.%Y')} tarixindən) — {week_type_str.capitalize()} həftə, {student['group_name']}:"]
+            else: # Əgər bu iş günüdürsə, indiki həftənin cədvəlini göstər
+                week_type_to_show = "alt" if is_current_week_alt else "ust"
+                text_lines = [f"Bu həftə — {week_type_to_show.capitalize()} həftə, {student['group_name']}:"]
                 
-                # Fetch lessons for the next week
-                lessons = get_lessons_filtered(group=student["group_name"], week_type=week_type_str)
-                
-            else: # If it's a weekday, show the current week's schedule
-                week_type_str = "alt" if is_alt_week() else "ust"
-                text_lines = [f"Bu həftə — {week_type_str.capitalize()} həftə, {student['group_name']}:"]
-                
-                # Fetch lessons for the current week
-                lessons = get_lessons_filtered(group=student["group_name"], week_type=week_type_str)
-                
+            lessons = get_lessons_filtered(group=student["group_name"], week_type=week_type_to_show)
             
             if not lessons:
-                message = f"{week_type_str.capitalize()} həftə üçün dərs yoxdur."
+                message = f"{week_type_to_show.capitalize()} həftə üçün dərs yoxdur."
             else:
-                # Sort lessons by day_norm and time
-                sorted_lessons = sorted(lessons, key=lambda x: (x.get('day_norm', ''), x.get('time', '')))
+                # Dərsləri günlərə və vaxta görə sırala
+                sorted_lessons = sorted(lessons, key=lambda x: (int(x.get('day_norm', 9)), x.get('time', '')))
                 
-                current_day_text = ""
+                current_day_norm = ""
                 for ls in sorted_lessons:
-                    day_norm_text = ls.get("day_norm", "—")
-                    if day_norm_text != current_day_text:
-                        text_lines.append(f"\n**{day_norm_text.capitalize()}**")
-                        current_day_text = day_norm_text
+                    day_norm_text = ls.get("day_norm", "9")
+                    if day_norm_text != current_day_norm:
+                        day_name_map = {"1": "Bazar Ertəsi", "2": "Çərşənbə Axşamı", "3": "Çərşənbə",
+                                        "4": "Cümə Axşamı", "5": "Cümə", "6": "Şənbə", "7": "Bazar"}
+                        
+                        text_lines.append(f"\n**{day_name_map.get(day_norm_text, 'Bilinməyən gün')}**")
+                        current_day_norm = day_norm_text
                     
                     time_str = ls.get("time", "—")
                     subject_str = ls.get("subject", "—")
