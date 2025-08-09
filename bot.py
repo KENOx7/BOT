@@ -477,8 +477,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 for ls in sorted_lessons:
                     day_norm_text = ls.get("day_norm", "9")
                     if day_norm_text != current_day_norm:
-                        day_name_map = {"1": "Bazar Ertəsi", "2": "Çərşənbə Axşamı", "3": "Çərşənbə",
-                                        "4": "Cümə Axşamı", "5": "Cümə", "6": "Şənbə", "7": "Bazar"}
+                        day_name_map = {"1": "1-ci Gün Bazar Ertəsi", "2": "2-ci Gün Çərşənbə Axşamı", "3": "3 cü Gün Çərşənbə",
+                                        "4": "4-cü Gün Cümə Axşamı", "5": "5-ci Gün Cümə", "6": "Şənbə", "7": "Bazar"}
                         
                         text_lines.append(f"\n**{day_name_map.get(day_norm_text, 'Bilinməyən gün')}**")
                         current_day_norm = day_norm_text
