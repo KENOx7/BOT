@@ -452,55 +452,91 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data in ["sched_today", "sched_tomorrow", "sched_week"]:
         today = datetime.now()
-        if data == "sched_tomorrow":
-            target_date = today + timedelta(days=1)
-        elif data == "sched_today":
+        
+        if data == "sched_today":
             target_date = today
-        else:
-            target_date = None
-
-        if target_date and target_date.weekday() in [5, 6]:
-            week_type_str = "alt" if not is_alt_week() else "üst"
-        else:
+            lessons = get_lessons_filtered(group=student["group_name"], day=str(target_date.weekday() + 1))
             week_type_str = "alt" if is_alt_week() else "üst"
-
-        if data == "sched_week":
-            lessons = get_lessons_filtered(group=student["group_name"], week_type=week_type_str)
-        else:
-            lessons = get_lessons_filtered(group=student["group_name"], day=str(target_date.weekday() + 1), week_type=week_type_str)
-
-        if not lessons:
-            await query.message.reply_text(f"{week_type_str.capitalize()} həftə üçün dərs yoxdur.")
-        else:
-            if data == "sched_week":
-                text_lines = [f"{week_type_str.capitalize()} həftə, {student['group_name']}:"]
+            if not lessons:
+                message = f"{target_date.strftime('%d.%m.%Y')} — {week_type_str.capitalize()} həftə üçün dərs yoxdur."
             else:
                 text_lines = [f"{target_date.strftime('%d.%m.%Y')} — {week_type_str.capitalize()} həftə, {student['group_name']}:"]
-            for ls in lessons:
-                time_str = ls.get("time", "—")
-                subject_str = ls.get("subject", "—")
-                teacher_str = f"({ls.get('teacher', '—')})" if ls.get('teacher') else ""
-                room_str = f"[otaq {ls.get('room', '—')}]" if ls.get('room') else ""
-                text_lines.append(f"{time_str} - {subject_str} {teacher_str} {room_str}".strip())
-            await query.message.reply_text("\n".join(text_lines))
+                for ls in lessons:
+                    time_str = ls.get("time", "—")
+                    subject_str = ls.get("subject", "—")
+                    teacher_str = f"({ls.get('teacher', '—')})" if ls.get('teacher') else ""
+                    room_str = f"[otaq {ls.get('room', '—')}]" if ls.get('room') else ""
+                    text_lines.append(f"{time_str} - {subject_str} {teacher_str} {room_str}".strip())
+                message = "\n".join(text_lines)
+            await query.message.reply_text(message)
 
-    elif data == "today":
-        today_weekday = datetime.now().weekday() + 1 # Monday is 1, Sunday is 7
-        today_is_alt = is_alt_week()
-        week_type_str = "alt" if today_is_alt else "üst"
-        lessons = get_lessons_for_group_on_day(student["group_name"], str(today_weekday))
-        
-        if not lessons:
-            await query.message.reply_text(f"{week_type_str.capitalize()} həftə üçün bu gün dərs yoxdur.")
-        else:
-            text_lines = [f"Bugün - {week_type_str.capitalize()} həftə, {student['group_name']}:"]
-            for ls in lessons:
-                time_str = ls.get("time", "—")
-                subject_str = ls.get("subject", "—")
-                teacher_str = f"({ls.get('teacher', '—')})" if ls.get('teacher') else ""
-                room_str = f"[otaq {ls.get('room', '—')}]" if ls.get('room') else ""
-                text_lines.append(f"{time_str} - {subject_str} {teacher_str} {room_str}".strip())
-            await query.message.reply_text("\n".join(text_lines))
+        elif data == "sched_tomorrow":
+            target_date = today + timedelta(days=1)
+            is_tomorrow_weekend = target_date.weekday() >= 5
+            
+            if is_tomorrow_weekend:
+                week_type_str = "alt" if not is_alt_week() else "üst"
+            else:
+                week_type_str = "alt" if is_alt_week() else "üst"
+            
+            lessons = get_lessons_filtered(group=student["group_name"], day=str(target_date.weekday() + 1), week_type=week_type_str)
+
+            if not lessons:
+                message = f"{target_date.strftime('%d.%m.%Y')} — {week_type_str.capitalize()} həftə üçün dərs yoxdur."
+            else:
+                text_lines = [f"{target_date.strftime('%d.%m.%Y')} — {week_type_str.capitalize()} həftə, {student['group_name']}:"]
+                for ls in lessons:
+                    time_str = ls.get("time", "—")
+                    subject_str = ls.get("subject", "—")
+                    teacher_str = f"({ls.get('teacher', '—')})" if ls.get('teacher') else ""
+                    room_str = f"[otaq {ls.get('room', '—')}]" if ls.get('room') else ""
+                    text_lines.append(f"{time_str} - {subject_str} {teacher_str} {room_str}".strip())
+                message = "\n".join(text_lines)
+            await query.message.reply_text(message)
+
+        elif data == "sched_week":
+            current_day_of_week = today.weekday()
+            
+            # If today is Saturday (5) or Sunday (6), show next week's schedule
+            if current_day_of_week >= 5:
+                # The next week starts with the opposite week type
+                week_type_str = "alt" if not is_alt_week() else "ust"
+                week_start_date = today + timedelta(days=(7 - current_day_of_week))
+                
+                text_lines = [f"Növbəti həftə ({week_start_date.strftime('%d.%m.%Y')} tarixindən) — {week_type_str.capitalize()} həftə, {student['group_name']}:"]
+                
+                # Fetch lessons for the next week
+                lessons = get_lessons_filtered(group=student["group_name"], week_type=week_type_str)
+                
+            else: # If it's a weekday, show the current week's schedule
+                week_type_str = "alt" if is_alt_week() else "ust"
+                text_lines = [f"Bu həftə — {week_type_str.capitalize()} həftə, {student['group_name']}:"]
+                
+                # Fetch lessons for the current week
+                lessons = get_lessons_filtered(group=student["group_name"], week_type=week_type_str)
+                
+            
+            if not lessons:
+                message = f"{week_type_str.capitalize()} həftə üçün dərs yoxdur."
+            else:
+                # Sort lessons by day_norm and time
+                sorted_lessons = sorted(lessons, key=lambda x: (x.get('day_norm', ''), x.get('time', '')))
+                
+                current_day_text = ""
+                for ls in sorted_lessons:
+                    day_norm_text = ls.get("day_norm", "—")
+                    if day_norm_text != current_day_text:
+                        text_lines.append(f"\n**{day_norm_text.capitalize()}**")
+                        current_day_text = day_norm_text
+                    
+                    time_str = ls.get("time", "—")
+                    subject_str = ls.get("subject", "—")
+                    teacher_str = f"({ls.get('teacher', '—')})" if ls.get('teacher') else ""
+                    room_str = f"[otaq {ls.get('room', '—')}]" if ls.get('room') else ""
+                    text_lines.append(f"{time_str} - {subject_str} {teacher_str} {room_str}".strip())
+                message = "\n".join(text_lines)
+            
+            await query.message.reply_text(message)
 
     elif data == "grades":
         await query.message.reply_text("Qiymətlər funksiyası hazırlanır.")
